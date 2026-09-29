@@ -109,19 +109,19 @@ local Settings = {
 	perEggDelay = 0.3,
 	eggsPerTrip = 1,
 	buyItems = {}, -- "ร้าน|ไอเทม" = true เมื่อเลือกให้ซื้อ
-	-- สวิตช์รายระบบ (แกนหลัก = เก็บไข่ + กลับบ้าน ส่วนอื่นเปิดเอง)
-	autoFarm = true, -- 🧺 เก็บไข่อัตโนมัติ
+	-- สวิตช์รายระบบ (เริ่มต้นปิดหมด — เปิดเองในแต่ละแท็บ)
+	autoFarm = false, -- 🧺 เก็บไข่อัตโนมัติ
 	autoHatch = false, -- 🐣 ฟักไข่อัตโนมัติ
 	autoRadar = false, -- 📡 เปิดเรดาร์อัตโนมัติ
 	autoCash = false, -- 💰 เก็บเงินจากสัตว์เลี้ยง
 	autoFeed = false, -- 🍔 ให้อาหารอัตโนมัติ
 	autoManageNest = false, -- 🐕 จัดรังอัตโนมัติ
-	autoUnlockNest = true, -- 🔓 ปลดล็อกรังอัตโนมัติ
+	autoUnlockNest = false, -- 🔓 ปลดล็อกรังอัตโนมัติ
 	autoBuy = false, -- 🛒 ซื้อของอัตโนมัติ
 	autoRebirth = false, -- ♻️ Rebirth อัตโนมัติ
-	autoRejoin = true, -- 🔁 Auto Rejoin
+	autoRejoin = false, -- 🔁 Auto Rejoin
 	sellMode = false, -- 💰 ตะกร้ามีของ → วาบไปหน้า Sell
-	antiAfk = true, -- Anti-AFK
+	antiAfk = false, -- Anti-AFK
 	-- ESP
 	esp = false,
 	espDistance = true,
@@ -1260,7 +1260,7 @@ do
 			TabOther:Toggle({
 				Title = "Anti-AFK",
 				Desc = "กันเกมเตะออกเพราะแอฟ",
-				Value = true,
+				Value = false,
 				Callback = setAntiAfk,
 			})
 			TabOther:Paragraph({
@@ -1374,16 +1374,12 @@ getgenv().RideHub = {
 }
 
 --═══════════════ เริ่มระบบตอนโหลด ═══════════════
-setAntiAfk(true)
-if Settings.autoRejoin then
-	setAutoRejoin(true)
-end
 pcall(function()
 	queue_on_teleport('loadstring(game:HttpGet("https://raw.githubusercontent.com/ItsPvpMB/RideAPetHub/main/RideAPetHub.luau"))()')
 end)
 
-print("[RideHub v3] โหลดแล้ว — ระบบอัตโนมัติเริ่มใน 2 วิ | RightShift เมนู | F บิน | N noclip")
-notifyUI("ระบบอัตโนมัติเริ่มใน 2 วินาที — สวิตช์อยู่ในแต่ละแท็บ")
+print("[RideHub v3] โหลดแล้ว — สวิตช์ทุกตัวปิดอยู่ เปิดเองได้ในแต่ละแท็บ | RightShift เมนู | F บิน | N noclip")
+notifyUI("พร้อมใช้งาน — เปิดสวิตช์ระบบที่ต้องการได้ในแต่ละแท็บ")
 
 task.delay(2, function()
 	if not controllerRunning then
