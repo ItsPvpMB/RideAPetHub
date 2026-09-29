@@ -1,10 +1,11 @@
 --[[
 	╔══════════════════════════════════════════════════╗
-	║   Ride A Pet Hub v3 (Fixed Version)             ║
+	║   Ride A Pet Hub v3 (Fixed Version + Ctrl Key)  ║
 	╠══════════════════════════════════════════════════╣
-	║  RightShift : เปิด/ปิดเมนู                           ║
-	║  F          : บิน (WASD ตามกล้อง, Space/Ctrl ขึ้นลง)  ║
-	║  N          : Noclip                                ║
+	║  RightShift  : เปิด/ปิดเมนู                         ║
+	║  F           : บิน (WASD, Space/Ctrl ขึ้นลง)       ║
+	║  N           : Noclip                            ║
+	║  LeftControl : ล็อกเดินเร็ว (Toggle Walk Speed)      ║
 	╚══════════════════════════════════════════════════╝
 ]]
 
@@ -26,6 +27,7 @@ local LocalPlayer = Players.LocalPlayer
 
 -- ประกาศล่วงหน้า
 local notifyUI, shutdown, statusPara, WindUILib
+local walkLockToggleObj = nil -- ตัวแปรอ้างอิงสวิตช์ UI ล็อกเดินเร็ว
 
 --═══════════════ ปิดสคริปต์รอบก่อน (ถ้ามี) ═══════════════
 do
@@ -288,6 +290,27 @@ local function setNoclip(on, silent)
 	if not silent then notifyUI("Noclip: " .. (on and "เปิด" or "ปิด")) end
 end
 
+-- ฟังก์ชันสำหรับ Toggle สวิตช์ล็อกเดินเร็ว
+local function toggleWalkLock(state)
+	if state == nil then
+		Settings.walkLock = not Settings.walkLock
+	else
+		Settings.walkLock = state
+	end
+
+	local hum = getHumanoid()
+	if not Settings.walkLock then
+		if hum then hum.WalkSpeed = 16 end
+		notifyUI("ล็อกเดินเร็ว: ปิด")
+	else
+		notifyUI("ล็อกเดินเร็ว: เปิด (" .. tostring(Settings.walkSpeed) .. ")")
+	end
+
+	if walkLockToggleObj then
+		pcall(function() walkLockToggleObj:Set(Settings.walkLock) end)
+	end
+end
+
 bind(RunService.RenderStepped, function()
 	if flyState.on then
 		local root, hum = getRoot(), getHumanoid()
@@ -329,12 +352,17 @@ bind(RunService.RenderStepped, function()
 	end
 end)
 
+-- ตรวจสอบการกดปุ่มทางคีย์บอร์ด (F = บิน, N = Noclip, LeftControl = ล็อกเดินเร็ว)
 bind(UserInputService.InputBegan, function(input, gameProcessed)
 	if gameProcessed then return end
 	if input.KeyCode == Enum.KeyCode.F then
 		flyToggle()
 	elseif input.KeyCode == Enum.KeyCode.N then
 		setNoclip(not noclip)
+	elseif input.KeyCode == Enum.KeyCode.LeftControl then
+		if not flyState.on then -- ไม่สลับล็อกเดินเร็วหากกำลังกดบินอยู่
+			toggleWalkLock()
+		end
 	end
 end)
 
@@ -347,7 +375,7 @@ bind(LocalPlayer.CharacterAdded, function(char)
 	end
 end)
 
---═══════════════ ล็อกความเร็วเดิน/กระโดด (ปรับปรุงให้คืนค่าเมื่อปิด) ═══════════════
+--═══════════════ ล็อกความเร็วเดิน/กระโดด ═══════════════
 bind(RunService.Heartbeat, function()
 	local hum = getHumanoid()
 	if not hum then return end
@@ -383,7 +411,7 @@ local function setAntiAfk(on)
 	end
 end
 
---═══════════════ ESP ไข่ (แก้ให้ล้างค่าได้สะอาด 100%) ═══════════════
+--═══════════════ ESP ไข่ ═══════════════
 local function rarityOf(eggName)
 	local info = EggConfig[eggName]
 	return info and info.Rarity or "Common"
@@ -581,7 +609,7 @@ local function depositAtHome()
 	return basketCount() == 0
 end
 
---═══════════════ ระบบอัตโนมัติแยกแต่ละอัน ═══════════════
+--═══════════════ ระบบอัตโนมัติ ═══════════════
 
 local function hatchReadyEggs()
 	local plot = getPlot()
@@ -779,7 +807,7 @@ local function setAutoRejoin(on)
 	end)
 end
 
---═══════════════ ลูปควบคุมหลัก (ปรับเช็กการสั่งปิดแบบเรียลไทม์) ═══════════════
+--═══════════════ ลูปควบคุมหลัก ═══════════════
 local function mainController()
 	controllerRunning = true
 	mainRunning = true
@@ -790,37 +818,30 @@ local function mainController()
 			continue
 		end
 
-		-- 📡 เรดาร์
 		if Settings.autoRadar and ActivateRadar and cd("radar", 30) then
 			pcall(function() ActivateRadar:FireServer() end)
 		end
 
-		-- ♻️ Rebirth
 		if Settings.autoRebirth and RebirthRemote and cd("rebirth", 120) then
 			tryRebirth()
 		end
 
-		-- 🐣 ฟักไข่
 		if Settings.autoHatch then
 			hatchReadyEggs()
 		end
 
-		-- 🍔 ให้อาหาร
 		if Settings.autoFeed and cd("feed", 60) then
 			feedPets()
 		end
 
-		-- 💰 เก็บเงิน
 		if Settings.autoCash and cd("cash", 60) then
 			collectPetCash()
 		end
 
-		-- 🛒 ซื้อของ
 		if Settings.autoBuy and cd("autoBuy", 45) then
 			autoBuyItems()
 		end
 
-		-- 🧺 เก็บไข่อัตโนมัติ
 		if Settings.autoFarm then
 			local list = scanEggs()
 			if #list == 0 then
@@ -832,7 +853,7 @@ local function mainController()
 					if not Settings.autoFarm or tripDone then break end
 					local reply = tryPickup(entry)
 					
-					if not Settings.autoFarm then break end -- เช็กซ้ำหลัง pickup
+					if not Settings.autoFarm then break end
 					
 					if reply.status == "PickedUp" then
 						farmStats.collected += 1
@@ -864,7 +885,6 @@ local function mainController()
 			end
 		end
 
-		-- เช็กฝากของค้าง (ต้องเปิด autoFarm อยู่ถึงจะทำงานอัตโนมัติ)
 		if Settings.autoFarm and basketCount() > 0 then
 			if Settings.sellMode then
 				if cd("sellVisit", 30) then visitStall("Sell") end
@@ -1046,7 +1066,7 @@ do
 			TabShop:Button({ Title = "⚙️ ไปร้าน Gears", Icon = "wrench", Callback = function() visitStall("Gears") end })
 			TabShop:Button({ Title = "🍎 ไปร้าน Food", Icon = "apple", Callback = function() visitStall("Food") end })
 
-			-- แท็บ การเคลื่อนที่ (ปรับสวิตช์ให้รีเซ็ตค่าเดิน/โดด)
+			-- แท็บ การเคลื่อนที่
 			local flyToggleObj = TabMove:Toggle({
 				Title = "บิน (หรือกด F)",
 				Value = false,
@@ -1059,17 +1079,18 @@ do
 				Step = 10,
 				Callback = function(v) Settings.flySpeed = v end,
 			})
-			TabMove:Toggle({
-				Title = "ล็อกเดินเร็ว",
+
+			-- สร้าง UI Toggle สำหรับล็อกเดินเร็ว (รองรับกด Ctrl สลับได้)
+			walkLockToggleObj = TabMove:Toggle({
+				Title = "ล็อกเดินเร็ว (หรือกด Ctrl)",
 				Value = false,
 				Callback = function(v)
-					Settings.walkLock = v
-					if not v then
-						local hum = getHumanoid()
-						if hum then hum.WalkSpeed = 16 end
+					if Settings.walkLock ~= v then
+						toggleWalkLock(v)
 					end
 				end,
 			})
+			
 			TabMove:Slider({
 				Title = "ความเร็วเดิน",
 				Value = { Min = 16, Max = 300, Default = 16 },
@@ -1198,8 +1219,8 @@ getgenv().RideHub = {
 }
 
 --═══════════════ เริ่มระบบ ═══════════════
-print("[RideHub v3 Fixed] โหลดเรียบร้อย — สวิตช์เปิด/ปิดทำงานอิสระสมบูรณ์แล้ว")
-notifyUI("พร้อมใช้งาน — เปิดสวิตช์ระบบที่ต้องการได้ในแต่ละแท็บ")
+print("[RideHub v3 Fixed] โหลดเรียบร้อย — เพิ่มการเปิด/ปิดล็อกเดินเร็วด้วยปุ่ม Ctrl แล้ว")
+notifyUI("พร้อมใช้งาน — กด Ctrl เพื่อเปิด/ปิดล็อกเดินเร็วได้ทันที")
 
 task.delay(1, function()
 	if not controllerRunning then
