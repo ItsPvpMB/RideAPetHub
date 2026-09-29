@@ -903,27 +903,18 @@ local function mainController()
 								visitStall("Sell")
 								farmStats.last = "💰 อยู่หน้าร้าน Sell — กดขายในหน้าต่างที่เกมเปิดให้"
 							end
-							tripDone = true
-						elseif hasFreeNest() then
-							if depositAtHome() then
-								farmStats.last = "ฝากไข่ที่บ้านแล้ว — เริ่มรอบใหม่"
-							else
-								farmStats.last = "ฝากไม่สำเร็จ (รังเต็ม?)"
-							end
-							tripDone = true
 						else
-							farmStats.last = "รังเต็ม — ถือไข่ต่อในตะกร้า"
-							if Settings.autoUnlockNest and cd("unlockNest", 60) then
-								if unlockOneNest() then
-									farmStats.last = "🔓 ปลดล็อกรังใหม่แล้ว — จะฝากไข่รอบหน้า"
-								end
+							-- รังเต็ม? ลองปลดล็อกรัง / เก็บสัตว์เลี้ยงก่อนกลับบ้าน
+							if not hasFreeNest() and Settings.autoUnlockNest then
+								unlockOneNest()
 							end
-							if Settings.autoManageNest and cd("pickupPet", 180) then
-								if pickupOnePet() then
-									farmStats.last = "🐕 เก็บสัตว์เลี้ยง 1 ตัวเพื่อว่างรัง"
-								end
+							if not hasFreeNest() and Settings.autoManageNest and cd("pickupPet", 180) then
+								pickupOnePet()
 							end
+							depositAtHome()
+							farmStats.last = hasFreeNest() and "ฝากไข่ที่บ้านแล้ว — เริ่มรอบใหม่" or "กลับบ้านแล้ว — รังยังเต็ม ถือไข่ไว้"
 						end
+						tripDone = true
 					end
 				elseif reply.status == "BasketFull" then
 					farmStats.last = "🎒 ตะกร้าเต็ม! กลับบ้านฝาก หรือกด 💰 ขาย"
