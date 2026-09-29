@@ -27,7 +27,7 @@ local LocalPlayer = Players.LocalPlayer
 
 -- ประกาศล่วงหน้า
 local notifyUI, shutdown, statusPara, WindUILib
-local walkLockToggleObj = nil -- ตัวแปรอ้างอิงสวิตช์ UI ล็อกเดินเร็ว
+local walkLockToggleObj = nil
 
 --═══════════════ ปิดสคริปต์รอบก่อน (ถ้ามี) ═══════════════
 do
@@ -58,6 +58,8 @@ local PickupPetRemote = Remotes:FindFirstChild("PickupPet")
 local RebirthRemote = Remotes:FindFirstChild("Rebirth")
 local BuyWithCashRemote = Remotes:FindFirstChild("BuyWithCash")
 local PlotNestsRemote = (Remotes:FindFirstChild("Plot") or {}) and Remotes:FindFirstChild("Plot") and Remotes:FindFirstChild("Plot"):FindFirstChild("Nests")
+-- Remote สำหรับอัปเกรดป้าย
+local PlotUpgradesRemote = Remotes:FindFirstChild("Plot") and Remotes:FindFirstChild("Plot"):FindFirstChild("Upgrades")
 
 local RARITY_LIST = { "Common", "Rare", "Epic", "Legendary", "Mythic", "Divine", "Ethereal" }
 local RARITY_ORDER = { Common = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5, Divine = 6, Ethereal = 7 }
@@ -119,6 +121,7 @@ local Settings = {
 	autoBuy = false,
 	autoRebirth = false,
 	autoRejoin = false,
+	autoUpgrades = false,
 	sellMode = false,
 	antiAfk = false,
 	-- ESP
@@ -290,7 +293,6 @@ local function setNoclip(on, silent)
 	if not silent then notifyUI("Noclip: " .. (on and "เปิด" or "ปิด")) end
 end
 
--- ฟังก์ชันสำหรับ Toggle สวิตช์ล็อกเดินเร็ว
 local function toggleWalkLock(state)
 	if state == nil then
 		Settings.walkLock = not Settings.walkLock
@@ -352,7 +354,6 @@ bind(RunService.RenderStepped, function()
 	end
 end)
 
--- ตรวจสอบการกดปุ่มทางคีย์บอร์ด (F = บิน, N = Noclip, LeftControl = ล็อกเดินเร็ว)
 bind(UserInputService.InputBegan, function(input, gameProcessed)
 	if gameProcessed then return end
 	if input.KeyCode == Enum.KeyCode.F then
@@ -360,7 +361,7 @@ bind(UserInputService.InputBegan, function(input, gameProcessed)
 	elseif input.KeyCode == Enum.KeyCode.N then
 		setNoclip(not noclip)
 	elseif input.KeyCode == Enum.KeyCode.LeftControl then
-		if not flyState.on then -- ไม่สลับล็อกเดินเร็วหากกำลังกดบินอยู่
+		if not flyState.on then
 			toggleWalkLock()
 		end
 	end
@@ -375,7 +376,6 @@ bind(LocalPlayer.CharacterAdded, function(char)
 	end
 end)
 
---═══════════════ ล็อกความเร็วเดิน/กระโดด ═══════════════
 bind(RunService.Heartbeat, function()
 	local hum = getHumanoid()
 	if not hum then return end
@@ -755,7 +755,7 @@ end
 local function tryRebirth()
 	if not RebirthRemote then return false end
 	local ok = pcall(function() RebirthRemote:FireServer() end)
-	if ok then farmStats.last = "♻️ ยิง Rebirth แล้ว" end
+	if ok then farmStats.last = "♻️️ ยิง Rebirth แล้ว" end
 	return ok
 end
 
@@ -805,6 +805,18 @@ local function setAutoRejoin(on)
 			end)
 		end
 	end)
+end
+
+-- ฟังก์ชันอัปเกรดป้ายอัตโนมัติ (หน่วงเวลา 10 วินาที)
+local function autoUpgradesLoop()
+	while Settings.autoUpgrades do
+		pcall(function()
+			if PlotUpgradesRemote and cd("autoUpgrade_tick", 10.0) then
+				PlotUpgradesRemote:FireServer("Max")
+			end
+		end)
+		task.wait(1.0)
+	end
 end
 
 --═══════════════ ลูปควบคุมหลัก ═══════════════
@@ -1080,7 +1092,6 @@ do
 				Callback = function(v) Settings.flySpeed = v end,
 			})
 
-			-- สร้าง UI Toggle สำหรับล็อกเดินเร็ว (รองรับกด Ctrl สลับได้)
 			walkLockToggleObj = TabMove:Toggle({
 				Title = "ล็อกเดินเร็ว (หรือกด Ctrl)",
 				Value = false,
@@ -1120,7 +1131,20 @@ do
 				Callback = function(v) setNoclip(v, true) end,
 			})
 
-			-- แท็บ อื่นๆ
+			-- แท็บ อื่น ๆ (อัปเกรดป้ายแบบ Max หน่วง 10 วิ)
+			TabOther:Toggle({
+				Title = "⚡ อัปเกรดป้ายอัตโนมัติ (Max - หน่วง 10 วิ)",
+				Value = false,
+				Callback = function(v)
+					Settings.autoUpgrades = v
+					if v then
+						task.spawn(autoUpgradesLoop)
+						notifyUI("เปิดระบบอัปเกรดป้ายอัตโนมัติแล้ว (หน่วง 10 วินาที)")
+					else
+						notifyUI("ปิดระบบอัปเกรดป้ายอัตโนมัติแล้ว")
+					end
+				end,
+			})
 			TabOther:Toggle({
 				Title = "♻️ Rebirth อัตโนมัติ",
 				Value = Settings.autoRebirth,
@@ -1185,7 +1209,6 @@ shutdown = function()
 	setEsp(false)
 	setAntiAfk(false)
 	
-	-- คืนค่าตัวละคร
 	local hum = getHumanoid()
 	if hum then
 		hum.WalkSpeed = 16
@@ -1194,6 +1217,7 @@ shutdown = function()
 	
 	Settings.walkLock = false
 	Settings.jumpLock = false
+	Settings.autoUpgrades = false
 	for _, conn in ipairs(connections) do conn:Disconnect() end
 	table.clear(connections)
 	if Window then pcall(function() Window:Destroy() end) end
@@ -1219,8 +1243,8 @@ getgenv().RideHub = {
 }
 
 --═══════════════ เริ่มระบบ ═══════════════
-print("[RideHub v3 Fixed] โหลดเรียบร้อย — เพิ่มการเปิด/ปิดล็อกเดินเร็วด้วยปุ่ม Ctrl แล้ว")
-notifyUI("พร้อมใช้งาน — กด Ctrl เพื่อเปิด/ปิดล็อกเดินเร็วได้ทันที")
+print("[RideHub v3 Fixed] โหลดเรียบร้อย — อัปเกรดป้ายแบบ Max (หน่วง 10 วินาที)")
+notifyUI("พร้อมใช้งาน — กด RightShift เพื่อเปิด/ปิดเมนู")
 
 task.delay(1, function()
 	if not controllerRunning then
