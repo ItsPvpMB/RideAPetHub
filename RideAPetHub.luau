@@ -1,16 +1,14 @@
 --[[
-	╔══════════════════════════════════════════════╗
-	║   Ride A Pet Hub — สคริปต์ครบวงจร (ไฟล์เดียว)   ║
-	╠══════════════════════════════════════════════╣
-	║  RightShift : เปิด/ปิดเมนู                      ║
-	║  F          : บิน (WASD ตามกล้อง, Space/Ctrl ขึ้นลง) ║
-	║  N          : Noclip                          ║
-	║  ฟีเจอร์: ฟาร์มไข่อัตโนมัติ (เก็บ→กลับบ้านฝาก)     ║
-	║           ESP ไข่ทุกระดับ, เดินเร็ว, กระโดดสูง,   ║
-	║           Anti-AFK                             ║
-	╚══════════════════════════════════════════════╝
-	วิธีใช้: คัดลอกทั้งไฟล์ไปรันใน executor ของ Roblox
-	(ทำงานกับผู้เล่นทุกคน ตรวจหาบ้าน/รังของแต่ละคนให้อัตโนมัติ)
+	╔══════════════════════════════════════════════════╗
+	║   Ride A Pet Hub v3 — สคริปต์ครบวงจร (ไฟล์เดียว)     ║
+	╠══════════════════════════════════════════════════╣
+	║  RightShift : เปิด/ปิดเมนู (ปิดเมนูมีปุ่มลอยบนจอ)       ║
+	║  F          : บิน (WASD ตามกล้อง, Space/Ctrl ขึ้นลง)  ║
+	║  N          : Noclip                                ║
+	║                                                  ║
+	║  ไม่มีปุ่มรวมอีกต่อไป — ทุกระบบเปิด/ปิดด้วยสวิตช์       ║
+	║  ของตัวเองในแต่ละแท็บ (จัดตามระบบเกม)                ║
+	╚══════════════════════════════════════════════════╝
 ]]
 
 local Players = game:GetService("Players")
@@ -19,7 +17,13 @@ local UserInputService = game:GetService("UserInputService")
 local StarterGui = game:GetService("StarterGui")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
-local VirtualUser = game:GetService("VirtualUser")
+local VirtualUser = nil
+do
+	local ok, v = pcall(function()
+		return game:GetService("VirtualUser")
+	end)
+	if ok then VirtualUser = v end
+end
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -48,6 +52,13 @@ end
 local Remotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Game")
 local EggPickup = Remotes:WaitForChild("EggPickup")
 local EggArrivalClaim = Remotes:FindFirstChild("EggArrivalClaim")
+local HatchRemote = Remotes:FindFirstChild("Hatch")
+local ActivateRadar = Remotes:FindFirstChild("ActivateRadar")
+local FeedPetRemote = Remotes:FindFirstChild("FeedPet")
+local PickupPetRemote = Remotes:FindFirstChild("PickupPet")
+local RebirthRemote = Remotes:FindFirstChild("Rebirth")
+local BuyWithCashRemote = Remotes:FindFirstChild("BuyWithCash")
+local PlotNestsRemote = (Remotes:FindFirstChild("Plot") or {}) and Remotes:FindFirstChild("Plot") and Remotes:FindFirstChild("Plot"):FindFirstChild("Nests")
 
 local RARITY_LIST = { "Common", "Rare", "Epic", "Legendary", "Mythic", "Divine", "Ethereal" }
 local RARITY_ORDER = { Common = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5, Divine = 6, Ethereal = 7 }
@@ -61,24 +72,65 @@ local RARITY_COLOR = {
 	Ethereal = Color3.fromRGB(255, 255, 255),
 }
 
+local function fmtNum(n)
+	n = tonumber(n) or 0
+	if n >= 1e12 then return string.format("%.1fT", n / 1e12) end
+	if n >= 1e9 then return string.format("%.1fB", n / 1e9) end
+	if n >= 1e6 then return string.format("%.1fM", n / 1e6) end
+	if n >= 1e3 then return string.format("%.1fK", n / 1e3) end
+	return tostring(math.floor(n))
+end
+
+-- รายการไอเทมในร้าน (อ่านจาก UI ร้าน: Food / Gears)
+local shopCatalog = {}
+do
+	local shop = LocalPlayer.PlayerGui:FindFirstChild("Main")
+	shop = shop and shop:FindFirstChild("Shop")
+	local holders = shop and shop:FindFirstChild("Holders")
+	if holders then
+		for _, cat in ipairs({ "Food", "Gears" }) do
+			local container = holders:FindFirstChild(cat)
+			if container then
+				for _, tile in ipairs(container:GetChildren()) do
+					if tile:IsA("Frame") and tile.Name ~= "BottomSpacer" and tile.Name ~= "ItemTemplate" then
+						table.insert(shopCatalog, { cat = cat, item = tile.Name })
+					end
+				end
+			end
+		end
+	end
+end
+
 --═══════════════ SETTINGS ═══════════════
 local Settings = {
 	rarities = { Common = true, Rare = true, Epic = true, Legendary = true, Mythic = true, Divine = true, Ethereal = true },
-	rarestFirst = true,
+	sortMode = "หายากสุดก่อน",
 	settleDelay = 1.2,
 	perEggDelay = 0.3,
-	autoRepeat = false,
-	repeatDelay = 10,
 	eggsPerTrip = 1,
-	stopWhenNoNest = true,
+	buyItems = {}, -- "ร้าน|ไอเทม" = true เมื่อเลือกให้ซื้อ
+	-- สวิตช์รายระบบ (แกนหลัก = เก็บไข่ + กลับบ้าน ส่วนอื่นเปิดเอง)
+	autoFarm = true, -- 🧺 เก็บไข่อัตโนมัติ
+	autoHatch = false, -- 🐣 ฟักไข่อัตโนมัติ
+	autoRadar = false, -- 📡 เปิดเรดาร์อัตโนมัติ
+	autoCash = false, -- 💰 เก็บเงินจากสัตว์เลี้ยง
+	autoFeed = false, -- 🍔 ให้อาหารอัตโนมัติ
+	autoManageNest = false, -- 🐕 จัดรังอัตโนมัติ
+	autoUnlockNest = true, -- 🔓 ปลดล็อกรังอัตโนมัติ
+	autoBuy = false, -- 🛒 ซื้อของอัตโนมัติ
+	autoRebirth = false, -- ♻️ Rebirth อัตโนมัติ
+	autoRejoin = true, -- 🔁 Auto Rejoin
+	sellMode = false, -- 💰 ตะกร้ามีของ → วาบไปหน้า Sell
+	antiAfk = true, -- Anti-AFK
+	-- ESP
 	esp = false,
 	espDistance = true,
+	-- การเคลื่อนที่
 	flySpeed = 60,
 	walkLock = false,
 	walkSpeed = 16,
 	jumpLock = false,
 	jumpPower = 50,
-	antiAfk = false,
 }
 
 --═══════════════ STATE ═══════════════
@@ -92,10 +144,20 @@ local function bind(signal, fn)
 	return conn
 end
 
-local farming = false
+local controllerRunning = false
+local mainRunning = false
 local farmStats = { collected = 0, failed = 0, last = "-" }
 local espObjects = {}
 local espOrigColors = {}
+local cool = {}
+
+local function cd(key, secs)
+	local t = cool[key]
+	local now = os.clock()
+	if t and now - t < secs then return false end
+	cool[key] = now
+	return true
+end
 
 --═══════════════ HELPERS ═══════════════
 local function getRoot(char)
@@ -156,7 +218,7 @@ end
 
 --═══════════════ FLY ═══════════════
 local flyState = { on = false, bv = nil, bg = nil }
-local flyOnChanged = nil
+local flySync = nil
 
 local function flyDestroyParts()
 	if flyState.bv then
@@ -167,17 +229,6 @@ local function flyDestroyParts()
 		flyState.bg:Destroy()
 		flyState.bg = nil
 	end
-end
-
-local function flyStop(silent)
-	flyState.on = false
-	flyDestroyParts()
-	local hum = getHumanoid()
-	if hum then hum.PlatformStand = false end
-	local root = getRoot()
-	if root then root.AssemblyLinearVelocity = Vector3.zero end
-	if flyOnChanged then pcall(flyOnChanged, false) end
-	if not silent then notifyUI("ปิดบินแล้ว") end
 end
 
 local function flyStart()
@@ -199,11 +250,26 @@ local function flyStart()
 	flyState.bg.CFrame = root.CFrame
 	flyState.bg.Parent = root
 	flyState.on = true
-	if flyOnChanged then pcall(flyOnChanged, true) end
+	if flySync then pcall(flySync, true) end
+end
+
+local function flyStop(silent)
+	flyState.on = false
+	flyDestroyParts()
+	local hum = getHumanoid()
+	if hum then hum.PlatformStand = false end
+	local root = getRoot()
+	if root then root.AssemblyLinearVelocity = Vector3.zero end
+	if flySync then pcall(flySync, false) end
+	if not silent then notifyUI("ปิดบินแล้ว") end
 end
 
 local function flyToggle(silent)
-	if flyState.on then flyStop(silent) else flyStart() end
+	if flyState.on then
+		flyStop(silent)
+	else
+		flyStart()
+	end
 end
 
 local noclip = false
@@ -309,19 +375,26 @@ local function setAntiAfk(on)
 		antiAfkConn:Disconnect()
 		antiAfkConn = nil
 	end
-	if on then
+	if on and VirtualUser then
 		antiAfkConn = LocalPlayer.Idled:Connect(function()
-			VirtualUser:CaptureController()
-			VirtualUser:ClickButton2(Vector2.new())
+			pcall(function()
+				VirtualUser:CaptureController()
+				VirtualUser:ClickButton2(Vector2.new())
+			end)
 		end)
 		table.insert(connections, antiAfkConn)
 	end
 end
 
---═══════════════ ESP ไข่ ═══════════════
+--═══════════════ ESP ไข่ (โชว์ Luck ด้วย) ═══════════════
 local function rarityOf(eggName)
 	local info = EggConfig[eggName]
 	return info and info.Rarity or "Common"
+end
+
+local function luckOf(eggName)
+	local info = EggConfig[eggName]
+	return tonumber(info and info.Luck) or 0
 end
 
 local function espClear()
@@ -352,8 +425,8 @@ local function espUpdate()
 				billboard.Name = "HubEggESP"
 				billboard.Adornee = base
 				billboard.AlwaysOnTop = true
-				billboard.Size = UDim2.new(0, 170, 0, 52)
-				billboard.StudsOffset = Vector3.new(0, 3.4, 0)
+				billboard.Size = UDim2.new(0, 180, 0, 66)
+				billboard.StudsOffset = Vector3.new(0, 3.6, 0)
 				billboard.MaxDistance = 5000
 				local label = Instance.new("TextLabel")
 				label.Name = "Label"
@@ -377,7 +450,10 @@ local function espUpdate()
 				espObjects[model] = obj
 			end
 			local dist = root and math.floor((obj.base.Position - root.Position).Magnitude) or 0
-			obj.label.Text = ("%s\n%s"):format(model.Name, Settings.espDistance and (dist .. " สตั๊ด") or "")
+			local luck = luckOf(model.Name)
+			local line1 = model.Name .. (luck > 0 and ("  ★" .. fmtNum(luck)) or "")
+			local line2 = Settings.espDistance and (dist .. " สตั๊ด") or ""
+			obj.label.Text = line1 .. "\n" .. line2
 		end
 	end
 	for model, obj in pairs(espObjects) do
@@ -395,7 +471,6 @@ local function setEsp(on)
 	end
 end
 
--- ลูปอัปเดต ESP ทุก 0.5 วิ
 local espAcc = 0
 bind(RunService.Heartbeat, function(dt)
 	if not Settings.esp then return end
@@ -406,20 +481,12 @@ bind(RunService.Heartbeat, function(dt)
 end)
 
 --═══════════════ สแกนไข่ (ข้อมูลฝั่งเซิร์ฟ) ═══════════════
-local function anyRaritySelected()
-	for _, r in ipairs(RARITY_LIST) do
-		if Settings.rarities[r] then return true end
-	end
-	return false
-end
-
 local function scanEggs()
 	local list = {}
 	local serverData = ReplicatedStorage:FindFirstChild("ServerData")
 	local activeEggs = serverData and serverData:FindFirstChild("ActiveEggs")
 	local rendered = Workspace:FindFirstChild("RenderedEggs")
 	if not activeEggs then return list end
-	local filterOn = anyRaritySelected()
 	local renderedList = rendered and rendered:GetChildren() or {}
 	local root = getRoot()
 	for _, marker in ipairs(activeEggs:GetChildren()) do
@@ -427,7 +494,7 @@ local function scanEggs()
 		local pos = marker:GetAttribute("Position")
 		local info = eggName and EggConfig[eggName]
 		local rarity = info and info.Rarity or "Common"
-		if info and pos and (not filterOn or Settings.rarities[rarity]) then
+		if info and pos and Settings.rarities[rarity] then
 			local bestModel, bestD
 			for _, m in ipairs(renderedList) do
 				if m.Name == eggName then
@@ -452,21 +519,26 @@ local function scanEggs()
 			end
 		end
 	end
-	if Settings.rarestFirst then
+	if Settings.sortMode == "ใกล้สุดก่อน" then
 		table.sort(list, function(a, b)
-			local ra, rb = RARITY_ORDER[a.rarity] or 0, RARITY_ORDER[b.rarity] or 0
-			if ra ~= rb then return ra > rb end
+			return a.dist < b.dist
+		end)
+	elseif Settings.sortMode == "Luck สูงสุดก่อน" then
+		table.sort(list, function(a, b)
+			if a.luck ~= b.luck then return a.luck > b.luck end
 			return a.dist < b.dist
 		end)
 	else
 		table.sort(list, function(a, b)
+			local ra, rb = RARITY_ORDER[a.rarity] or 0, RARITY_ORDER[b.rarity] or 0
+			if ra ~= rb then return ra > rb end
 			return a.dist < b.dist
 		end)
 	end
 	return list
 end
 
---═══════════════ ฟาร์มไข่ ═══════════════
+--═══════════════ เก็บไข่ + ฝากบ้าน ═══════════════
 local pendingReplies = {}
 
 bind(EggPickup.OnClientEvent, function(status, info, key)
@@ -512,106 +584,372 @@ local function depositAtHome()
 	return basketCount() == 0
 end
 
-local function farmLoop()
-	while farming do
+--═══════════════ ระบบอัตโนมัติแยกแต่ละอัน ═══════════════
+
+-- 🐣 ฟักไข่: ยิง Hatch({EggKey}) ให้ไข่ที่ปลูกไว้ — คืนจำนวนไข่ที่ปลูกอยู่
+local function hatchReadyEggs()
+	local plot = getPlot()
+	if not plot or not HatchRemote then return 0 end
+	local n = 0
+	for _, d in ipairs(plot:GetDescendants()) do
+		local key = d:GetAttribute("EggKey")
+		if key then
+			n += 1
+			if cd("hatch_" .. key, 10) then
+				task.spawn(function()
+					pcall(function()
+						HatchRemote:FireServer({ EggKey = key })
+					end)
+				end)
+			end
+		end
+	end
+	return n
+end
+
+-- 💰 เก็บเงิน: วิ่งแตะสัตว์เลี้ยงที่บ้าน (Touch Pet To Collect Cash)
+local function collectPetCash()
+	local plot = getPlot()
+	local pets = plot and plot:FindFirstChild("Pets")
+	if not pets then return 0 end
+	local n = 0
+	for _, pet in ipairs(pets:GetChildren()) do
+		if pet:IsA("Model") then
+			local ok, pivot = pcall(function()
+				return pet:GetPivot().Position
+			end)
+			if ok and pivot then
+				teleportTo(CFrame.new(pivot + Vector3.new(0, 4, 0)))
+				n += 1
+				task.wait(0.15)
+			end
+		end
+	end
+	return n
+end
+
+-- 🐕 จัดรัง: เก็บสัตว์เลี้ยง 1 ตัวกลับเพื่อให้รังว่าง (ค้นหา PetKey จากทุกแหล่ง)
+local function pickupOnePet()
+	if not PickupPetRemote then return false end
+	local roots = {}
+	local plot = getPlot()
+	if plot then
+		table.insert(roots, plot)
+	end
+	local gameObjects = Workspace:FindFirstChild("GameObjects")
+	if gameObjects then
+		table.insert(roots, gameObjects)
+	end
+	for _, rootInst in ipairs(roots) do
+		if rootInst:GetAttribute("PetKey") then
+			pcall(function()
+				PickupPetRemote:FireServer(rootInst:GetAttribute("PetKey"))
+			end)
+			return true
+		end
+		for _, d in ipairs(rootInst:GetDescendants()) do
+			local pk = d:GetAttribute("PetKey")
+			if pk then
+				pcall(function()
+					PickupPetRemote:FireServer(pk)
+				end)
+				return true
+			end
+		end
+	end
+	return false
+end
+
+-- 🔓 ปลดล็อกรังใหม่: วาบไปที่รังแล้วยิง Plot.Nests:FireServer(เลขรัง) — เซิร์ฟหักเงินให้เอง
+local function unlockOneNest()
+	local plot = getPlot()
+	local nests = plot and plot:FindFirstChild("Nests")
+	if not nests or not PlotNestsRemote then return false end
+	for _, nest in ipairs(nests:GetChildren()) do
+		local num = tonumber(nest.Name)
+		if num and nest:FindFirstChild("Locked") and cd("unlockNest_" .. num, 60) then
+			local ok, pivot = pcall(function()
+				return nest:GetPivot().Position
+			end)
+			if ok and pivot then
+				teleportTo(CFrame.new(pivot + Vector3.new(0, 4, 0)))
+				task.wait(1.0)
+			end
+			pcall(function()
+				PlotNestsRemote:FireServer(num)
+			end)
+			return true
+		end
+	end
+	return false
+end
+
+-- 🍔 ให้อาหาร: ต้องมี Tool อาหาร (tag "Food") ในกระเป๋า
+local function feedPets()
+	local hum = getHumanoid()
+	if not hum or not FeedPetRemote then return 0 end
+	local food = nil
+	for _, t in ipairs(LocalPlayer.Backpack:GetChildren()) do
+		if t:IsA("Tool") and t:HasTag("Food") then
+			food = t
+			break
+		end
+	end
+	if not food then
+		farmStats.last = "🍔 ไม่มีอาหารในกระเป๋า — ไปซื้อที่ร้าน Food"
+		return 0
+	end
+	local plot = getPlot()
+	if not plot then return 0 end
+	hum:EquipTool(food)
+	task.wait(0.3)
+	local fed = 0
+	for _, d in ipairs(plot:GetDescendants()) do
+		local pk = d:GetAttribute("PetKey")
+		if pk and cd("feed_" .. pk, 120) then
+			pcall(function()
+				FeedPetRemote:FireServer(pk, food.Name)
+			end)
+			fed += 1
+			task.wait(0.2)
+		end
+	end
+	if food.Parent == LocalPlayer.Character then
+		food.Parent = LocalPlayer.Backpack
+	end
+	return fed
+end
+
+-- 🛒 ซื้อของอัตโนมัติ: ซื้อเฉพาะไอเทมที่เลือกไว้ — ถ้าไม่เลือกอะไรเลย = ซื้อทุกไอเทม
+local function autoBuyItems()
+	if #shopCatalog == 0 then
+		farmStats.last = "🛒 ไม่พบรายการร้าน — เปิดร้านครั้งแรกแล้วรันสคริปต์ใหม่"
+		return 0
+	end
+	local anySelected = false
+	for _, entry in ipairs(shopCatalog) do
+		if Settings.buyItems[entry.cat .. "|" .. entry.item] then
+			anySelected = true
+			break
+		end
+	end
+	local bought = 0
+	for _, entry in ipairs(shopCatalog) do
+		local key = entry.cat .. "|" .. entry.item
+		local allowed = not anySelected or Settings.buyItems[key]
+		if allowed and BuyWithCashRemote and cd("buy_" .. key, 120) then
+			pcall(function()
+				BuyWithCashRemote:FireServer(entry.cat, entry.item)
+			end)
+			bought += 1
+			if bought >= 5 then break end
+		end
+	end
+	if bought > 0 then
+		farmStats.last = ("🛒 ซื้อของอัตโนมัติ %d รายการ"):format(bought)
+	end
+	return bought
+end
+
+-- ♻️ Rebirth: เซิร์ฟเช็กเงื่อนไขเอง — ยิงถ้าพร้อม
+local function tryRebirth()
+	if not RebirthRemote then return false end
+	local ok = pcall(function()
+		RebirthRemote:FireServer()
+	end)
+	if ok then
+		farmStats.last = "♻️ ยิง Rebirth แล้ว (ถ้าเงื่อนไขพร้อมจะขึ้นระดับ)"
+	end
+	return ok
+end
+
+-- 🛒 วาบไปร้าน + พยายามเปิดบทสนทนา
+local function visitStall(name)
+	local stalls = Workspace:FindFirstChild("Stalls")
+	local stall = stalls and stalls:FindFirstChild(name)
+	if not stall then
+		notifyUI("ไม่พบร้าน " .. tostring(name))
+		return
+	end
+	local ok, pivot = pcall(function()
+		return stall:GetPivot().Position
+	end)
+	if not ok or not pivot then return end
+	teleportTo(CFrame.new(pivot + Vector3.new(0, 4, 0)))
+	task.wait(0.8)
+	for _, d in ipairs(stall:GetDescendants()) do
+		if d:IsA("ProximityPrompt") and d.Enabled then
+			pcall(function()
+				fireproximityprompt(d)
+			end)
+			break
+		end
+	end
+	notifyUI("ไปร้าน " .. name .. " แล้ว")
+end
+
+-- 🔁 Auto Rejoin: สวิตช์เปิด/ปิดได้จริง — จับหน้าต่าง kick แล้ววาร์ปกลับ + คิวรันสคริปต์ซ้ำ
+local rejoinConn = nil
+local function setAutoRejoin(on)
+	Settings.autoRejoin = on
+	if rejoinConn then
+		rejoinConn:Disconnect()
+		rejoinConn = nil
+	end
+	if not on then return end
+	pcall(function()
+		local uiRoot = nil
+		if type(gethui) == "function" then
+			uiRoot = gethui()
+		else
+			uiRoot = game:GetService("CoreGui")
+		end
+		local frame = uiRoot:FindFirstChild("RobloxPromptGuiFrame")
+		local dialog = frame and frame:FindFirstChild("promptDialog")
+		if dialog then
+			rejoinConn = dialog:GetPropertyChangedSignal("Text"):Connect(function()
+				local t = string.lower(dialog.Text or "")
+				if t:find("kick") or t:find("kicked") or t:find("disconnect") then
+					notifyUI("โดนเตะ! กำลังกลับเข้าเกมใหม่...")
+					task.delay(1.5, function()
+						pcall(function()
+							game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
+						end)
+					end)
+				end
+			end)
+		end
+	end)
+	pcall(function()
+		queue_on_teleport('loadstring(game:HttpGet("https://raw.githubusercontent.com/ItsPvpMB/RideAPetHub/main/RideAPetHub.luau"))()')
+	end)
+end
+
+--═══════════════ ลูปควบคุมรวม (สวิตช์แต่ละอันกันการทำงานเอง) ═══════════════
+local function mainController()
+	controllerRunning = true
+	mainRunning = true
+	while mainRunning do
 		local hum = getHumanoid()
 		if not hum or hum.Health <= 0 then
 			task.wait(1)
 			continue
 		end
-		if not hasFreeNest() and Settings.stopWhenNoNest then
-			farmStats.last = "รังเต็ม! เอาไข่ไปฟักก่อน"
-			farming = false
-			break
+
+		-- 📡 เรดาร์
+		if Settings.autoRadar and ActivateRadar and cd("radar", 30) then
+			pcall(function()
+				ActivateRadar:FireServer()
+			end)
 		end
-		local list = scanEggs()
-		if #list == 0 then
-			farmStats.last = "ไม่มีไข่ตามเงื่อนไข"
-			if Settings.autoRepeat then
-				task.wait(Settings.repeatDelay)
-				continue
-			else
-				break
-			end
+
+		-- ♻️ Rebirth
+		if Settings.autoRebirth and RebirthRemote and cd("rebirth", 120) then
+			tryRebirth()
 		end
-		for _, entry in ipairs(list) do
-			if not farming then break end
-			if not hasFreeNest() and Settings.stopWhenNoNest and basketCount() > 0 then
-				break
-			end
-			local reply = tryPickup(entry)
-			if reply.status == "PickedUp" then
-				farmStats.collected += 1
-				farmStats.last = ("เก็บ %s สำเร็จ"):format(entry.name)
-				task.wait(0.2)
-				if basketCount() >= Settings.eggsPerTrip then
-					if depositAtHome() then
-						farmStats.last = "ฝากไข่ที่บ้านแล้ว"
-					else
-						farmStats.last = "ฝากไม่สำเร็จ (รังเต็ม?)"
-					end
-				end
-			else
-				farmStats.failed += 1
-				farmStats.last = ("พลาด %s: %s"):format(entry.name, tostring(reply.info or reply.status))
-			end
-			task.wait(Settings.perEggDelay)
+
+		-- 🐣 ฟักไข่
+		local plantedEggs = 0
+		if Settings.autoHatch then
+			plantedEggs = hatchReadyEggs()
 		end
+
+		-- ฝาก/ขายไข่ที่ถืออยู่ (ถ้ารังเต็มและไม่ใช้โหมดขาย จะถือไว้ในตะกร้าต่อ)
 		if basketCount() > 0 then
-			depositAtHome()
+			if Settings.sellMode then
+				if cd("sellVisit", 30) then
+					visitStall("Sell")
+					farmStats.last = "💰 อยู่หน้าร้าน Sell — กดขายในหน้าต่างที่เกมเปิดให้"
+				end
+			elseif hasFreeNest() then
+				depositAtHome()
+			end
 		end
-		if not Settings.autoRepeat then
-			break
+
+		-- 🍔 ให้อาหาร
+		if Settings.autoFeed and cd("feed", 60) then
+			feedPets()
 		end
-		task.wait(Settings.repeatDelay)
-	end
-	farming = false
-end
 
-local function startFarm()
-	if farming then return end
-	if flyState.on then flyStop(true) end
-	farming = true
-	task.spawn(farmLoop)
-end
+		-- 💰 เก็บเงินจากสัตว์เลี้ยง
+		if Settings.autoCash and cd("cash", 60) then
+			collectPetCash()
+		end
 
-local function stopFarm()
-	farming = false
-end
+		-- 🛒 ซื้อของอัตโนมัติ
+		if Settings.autoBuy and cd("autoBuy", 45) then
+			autoBuyItems()
+		end
 
---═══════════════ ฟักไข่ที่พร้อม ═══════════════
-local function autoHatch()
-	local plot = getPlot()
-	local nests = plot and plot:FindFirstChild("Nests")
-	if not nests then return 0, "ไม่พบรัง" end
-	local done = 0
-	for _, nest in ipairs(nests:GetChildren()) do
-		for _, egg in ipairs(nest:GetDescendants()) do
-			if egg:IsA("ProximityPrompt") and egg.Name == "Hatch" and egg.Enabled then
-				local holder = egg.Parent
-				local pos = holder and holder:IsA("BasePart") and holder.Position
-				if pos then
-					teleportTo(CFrame.new(pos + Vector3.new(0, 4, 0)))
-					task.wait(1.0)
-					local cam = Workspace.CurrentCamera
-					if cam then
-						cam.CFrame = CFrame.lookAt(pos + Vector3.new(0, 6, 8), pos)
+		-- 🧺 เก็บไข่ (เก็บได้แม้รังเต็ม — ไข่จะถืออยู่ในตะกร้า)
+		if Settings.autoFarm then
+			local list = scanEggs()
+			if #list == 0 then
+				farmStats.last = "ไม่มีไข่ตามเงื่อนไข — รอเกิดไข่ใหม่"
+				task.wait(5)
+				continue
+			end
+			local tripDone = false
+			for _, entry in ipairs(list) do
+				if not Settings.autoFarm or tripDone then break end
+				local reply = tryPickup(entry)
+				if reply.status == "PickedUp" then
+					farmStats.collected += 1
+					farmStats.last = ("เก็บ %s (★%s) สำเร็จ"):format(entry.name, fmtNum(entry.luck))
+					task.wait(0.2)
+					if basketCount() >= Settings.eggsPerTrip then
+						if Settings.sellMode then
+							if cd("sellVisit", 30) then
+								visitStall("Sell")
+								farmStats.last = "💰 อยู่หน้าร้าน Sell — กดขายในหน้าต่างที่เกมเปิดให้"
+							end
+							tripDone = true
+						elseif hasFreeNest() then
+							if depositAtHome() then
+								farmStats.last = "ฝากไข่ที่บ้านแล้ว — เริ่มรอบใหม่"
+							else
+								farmStats.last = "ฝากไม่สำเร็จ (รังเต็ม?)"
+							end
+							tripDone = true
+						else
+							farmStats.last = "รังเต็ม — ถือไข่ต่อในตะกร้า"
+							if Settings.autoUnlockNest and cd("unlockNest", 60) then
+								if unlockOneNest() then
+									farmStats.last = "🔓 ปลดล็อกรังใหม่แล้ว — จะฝากไข่รอบหน้า"
+								end
+							end
+							if Settings.autoManageNest and cd("pickupPet", 180) then
+								if pickupOnePet() then
+									farmStats.last = "🐕 เก็บสัตว์เลี้ยง 1 ตัวเพื่อว่างรัง"
+								end
+							end
+						end
 					end
-					task.wait(0.3)
-					pcall(function()
-						fireproximityprompt(egg)
-					end)
-					task.wait(0.8)
-					done += 1
+				elseif reply.status == "BasketFull" then
+					farmStats.last = "🎒 ตะกร้าเต็ม! กลับบ้านฝาก หรือกด 💰 ขาย"
 					break
+				else
+					farmStats.failed += 1
+					farmStats.last = ("พลาด %s: %s"):format(entry.name, tostring(reply.info or reply.status))
+				end
+				task.wait(Settings.perEggDelay)
+			end
+			if basketCount() > 0 then
+				if Settings.sellMode then
+					if cd("sellVisit", 30) then
+						visitStall("Sell")
+					end
+				elseif hasFreeNest() then
+					depositAtHome()
 				end
 			end
 		end
+		task.wait(1)
 	end
-	return done
+	controllerRunning = false
 end
 
---═══════════════ UI (WindUI) ═══════════════
+--═══════════════ UI (WindUI) — แท็บจัดตามระบบเกม สวิตช์รายระบบ ═══════════════
 local Window
 do
 	local ok, WindUI = pcall(function()
@@ -623,7 +961,7 @@ do
 			return WindUI:CreateWindow({
 				Title = "Ride A Pet Hub",
 				Icon = "egg",
-				Author = "ฟาร์มไข่ • บิน • ESP",
+				Author = "v3 • อัตโนมัติทุกระบบ • Luck",
 				Folder = "RideAPetHub",
 				Size = UDim2.fromOffset(560, 480),
 				Theme = "Dark",
@@ -646,26 +984,24 @@ do
 		end)
 		if created then
 			Window = win
+			pcall(function()
+				WindUI:SetNotificationLower(true) -- มือถือ: แจ้งเตือนไม่บังปุ่มจั๊มพ์
+			end)
 			local TabMain = Window:Tab({ Title = "หน้าหลัก", Icon = "home" })
-			local TabFarm = Window:Tab({ Title = "ฟาร์มไข่", Icon = "egg" })
-			local TabEsp = Window:Tab({ Title = "ESP ไข่", Icon = "eye" })
-			local TabMove = Window:Tab({ Title = "การเคลื่อนที่", Icon = "feather" })
-			local TabOther = Window:Tab({ Title = "อื่น ๆ", Icon = "settings" })
+			local TabEggs = Window:Tab({ Title = "🥚 ไข่", Icon = "egg" })
+			local TabPets = Window:Tab({ Title = "🐾 สัตว์เลี้ยง", Icon = "paw-print" })
+			local TabShop = Window:Tab({ Title = "🛒 ร้านค้า", Icon = "shopping-cart" })
+			local TabMove = Window:Tab({ Title = "🎮 การเคลื่อนที่", Icon = "feather" })
+			local TabOther = Window:Tab({ Title = "⚙️ อื่น ๆ", Icon = "settings" })
 
+			-- ═══ หน้าหลัก ═══
 			statusPara = TabMain:Paragraph({
 				Title = "📊 สถานะ",
 				Desc = "กำลังโหลด...",
 			})
-			TabMain:Button({
-				Title = "▶ เริ่มฟาร์มไข่",
-				Desc = "เก็บไข่ → วาบกลับบ้านฝาก → วนต่อ",
-				Icon = "play",
-				Callback = startFarm,
-			})
-			TabMain:Button({
-				Title = "⏹ หยุดฟาร์ม",
-				Icon = "square",
-				Callback = stopFarm,
+			TabMain:Paragraph({
+				Title = "🤖 ระบบอัตโนมัติ",
+				Desc = "เปิด/ปิดแต่ละระบบได้ในแท็บของมัน\n(ไข่ • สัตว์เลี้ยง • ร้านค้า • อื่น ๆ)",
 			})
 			TabMain:Button({
 				Title = "🏠 วาบกลับบ้าน",
@@ -680,95 +1016,187 @@ do
 					end
 				end,
 			})
-			TabMain:Button({
-				Title = "🐣 ฟักไข่ทุกรังที่พร้อม",
-				Desc = "ไปที่รังที่ไข่โตแล้วและกดฟักให้",
-				Icon = "egg",
-				Callback = function()
-					task.spawn(function()
-						local n, msg = autoHatch()
-						notifyUI(("ฟักไป %d รัง %s"):format(n, msg or ""))
-					end)
-				end,
-			})
 
-			TabFarm:Dropdown({
-				Title = "ระดับไข่ที่จะเก็บ",
+			-- ═══ 🥚 ไข่ (ระบบ Eggs ของเกม) ═══
+			TabEggs:Toggle({
+				Title = "🧺 เก็บไข่อัตโนมัติ",
+				Desc = "วาบไปเก็บ → กลับบ้านฝาก → วนต่อ",
+				Value = Settings.autoFarm,
+				Callback = function(v) Settings.autoFarm = v end,
+			})
+			TabEggs:Paragraph({
+				Title = "🧺 เก็บไข่ — ระดับที่จะเก็บ",
 				Desc = "ไม่เลือกอะไรเลย = เก็บทุกระดับ",
+			})
+			TabEggs:Dropdown({
+				Title = "ระดับไข่ที่จะเก็บ",
 				Values = RARITY_LIST,
 				Multi = true,
 				AllowNone = true,
 				Callback = function(selected)
-					for _, r in ipairs(RARITY_LIST) do
-						Settings.rarities[r] = false
-					end
+					local chosen = {}
 					if type(selected) == "table" then
 						for _, r in ipairs(selected) do
-							Settings.rarities[r] = true
+							chosen[r] = true
 						end
 					elseif type(selected) == "string" then
-						Settings.rarities[selected] = true
+						chosen[selected] = true
+					end
+					local any = false
+					for _, r in ipairs(RARITY_LIST) do
+						if chosen[r] then
+							any = true
+							break
+						end
+					end
+					for _, r in ipairs(RARITY_LIST) do
+						Settings.rarities[r] = not any or chosen[r]
 					end
 				end,
 			})
-			TabFarm:Dropdown({
+			TabEggs:Dropdown({
 				Title = "ลำดับการเก็บ",
-				Values = { "หายากสุดก่อน", "ใกล้สุดก่อน" },
+				Values = { "หายากสุดก่อน", "Luck สูงสุดก่อน", "ใกล้สุดก่อน" },
 				Callback = function(sel)
-					Settings.rarestFirst = (sel == "หายากสุดก่อน")
+					Settings.sortMode = sel
 				end,
 			})
-			TabFarm:Slider({
+			TabEggs:Slider({
 				Title = "เวลารอหลังวาบ (วินาที)",
 				Desc = "รอเซิร์ฟยอมรับตำแหน่ง — ต่ำไปอาจเก็บไม่ได้",
 				Value = { Min = 0.5, Max = 3, Default = 1.2 },
 				Step = 0.1,
 				Callback = function(v) Settings.settleDelay = v end,
 			})
-			TabFarm:Slider({
+			TabEggs:Slider({
 				Title = "หน่วงต่อฟอง (วินาที)",
 				Value = { Min = 0.1, Max = 1, Default = 0.3 },
 				Step = 0.05,
 				Callback = function(v) Settings.perEggDelay = v end,
 			})
-			TabFarm:Slider({
+			TabEggs:Slider({
 				Title = "เก็บกี่ฟองต่อการกลับบ้าน",
 				Desc = "1 = ปลอดภัยสุด (ไข่หมดเวลาเร็ว)",
 				Value = { Min = 1, Max = 5, Default = 1 },
 				Step = 1,
 				Callback = function(v) Settings.eggsPerTrip = v end,
 			})
-			TabFarm:Toggle({
-				Title = "วนฟาร์มอัตโนมัติ",
-				Desc = "เก็บจนหมดแล้วรอแล้วเก็บใหม่",
-				Value = false,
-				Callback = function(v) Settings.autoRepeat = v end,
+			TabEggs:Paragraph({
+				Title = "🐣 ฟักไข่ (ที่ปลูกไว้ในรัง)",
 			})
-			TabFarm:Slider({
-				Title = "หน่วงเวลาวนซ้ำ (วินาที)",
-				Value = { Min = 3, Max = 120, Default = 10 },
-				Step = 1,
-				Callback = function(v) Settings.repeatDelay = v end,
+			TabEggs:Toggle({
+				Title = "ฟักไข่อัตโนมัติ",
+				Desc = "ไข่ที่ปลูกไว้โตแล้วจะฟักเอง (คืนรังว่าง)",
+				Value = Settings.autoHatch,
+				Callback = function(v) Settings.autoHatch = v end,
 			})
-			TabFarm:Toggle({
-				Title = "หยุดฟาร์มถ้ารังเต็ม",
-				Desc = "กันไข่ที่เก็บมาแตกเพราะฝากไม่ได้",
-				Value = true,
-				Callback = function(v) Settings.stopWhenNoNest = v end,
+			TabEggs:Toggle({
+				Title = "📡 เปิดเรดาร์อัตโนมัติ",
+				Desc = "ยิง ActivateRadar ทุก 30 วิ (ต้องมีเรดาร์)",
+				Value = Settings.autoRadar,
+				Callback = function(v) Settings.autoRadar = v end,
 			})
-
-			TabEsp:Toggle({
-				Title = "เปิด ESP ไข่",
-				Desc = "เห็นไข่ทะลุกำแพง พร้อมสีตามระดับ",
+			TabEggs:Paragraph({
+				Title = "👁 เห็นไข่ (ESP)",
+			})
+			TabEggs:Toggle({
+				Title = "ESP ไข่",
+				Desc = "เห็นไข่ทะลุกำแพง + สีตามระดับ + ★Luck",
 				Value = false,
 				Callback = function(v) setEsp(v) end,
 			})
-			TabEsp:Toggle({
+			TabEggs:Toggle({
 				Title = "แสดงระยะทาง",
 				Value = true,
 				Callback = function(v) Settings.espDistance = v end,
 			})
 
+			-- ═══ 🐾 สัตว์เลี้ยง (ระบบ Pets ของเกม) ═══
+			TabPets:Toggle({
+				Title = "💰 เก็บเงินจากสัตว์เลี้ยง",
+				Desc = "วิ่งแตะสัตว์เลี้ยงเก็บเงินที่บ้านทุก 1 นาที",
+				Value = Settings.autoCash,
+				Callback = function(v) Settings.autoCash = v end,
+			})
+			TabPets:Toggle({
+				Title = "🍔 ให้อาหารอัตโนมัติ",
+				Desc = "ต้องมีอาหาร (Tool) ในกระเป๋า — ซื้อที่ร้าน Food",
+				Value = Settings.autoFeed,
+				Callback = function(v) Settings.autoFeed = v end,
+			})
+			TabPets:Toggle({
+				Title = "🐕 จัดรังอัตโนมัติ",
+				Desc = "รังเต็มและไม่มีไข่ให้ฟัก → เก็บสัตว์เลี้ยง 1 ตัวเพื่อว่างรัง",
+				Value = Settings.autoManageNest,
+				Callback = function(v) Settings.autoManageNest = v end,
+			})
+
+			-- ═══ 🛒 ร้านค้า (Stalls: Food / Gears / Sell) ═══
+			TabShop:Toggle({
+				Title = "🛒 ซื้อของอัตโนมัติ",
+				Desc = "ซื้อไอเทมที่เลือกไว้ด้านล่าง — ไม่เลือกอะไรเลย = ซื้อทุกอย่าง",
+				Value = Settings.autoBuy,
+				Callback = function(v) Settings.autoBuy = v end,
+			})
+			TabShop:Paragraph({
+				Title = "📦 เลือกไอเทมที่จะซื้อ (แยกตามร้าน)",
+				Desc = "ไม่เลือกอะไรเลย = ซื้อทุกไอเทมของร้านนั้น",
+			})
+			do
+				local byCat = { Food = {}, Gears = {} }
+				for _, entry in ipairs(shopCatalog) do
+					if byCat[entry.cat] then
+						table.insert(byCat[entry.cat], entry.item)
+					end
+				end
+				for _, cat in ipairs({ "Food", "Gears" }) do
+					local items = byCat[cat]
+					if items and #items > 0 then
+						TabShop:Dropdown({
+							Title = "🥬 ไอเทมร้าน " .. cat,
+							Values = items,
+							Multi = true,
+							AllowNone = true,
+							Callback = function(selected)
+								local chosen = {}
+								if type(selected) == "table" then
+									for _, name in ipairs(selected) do
+										chosen[name] = true
+									end
+								elseif type(selected) == "string" then
+									chosen[selected] = true
+								end
+								local any = false
+								for _, name in ipairs(items) do
+									if chosen[name] then
+										any = true
+										break
+									end
+								end
+								for _, name in ipairs(items) do
+									Settings.buyItems[cat .. "|" .. name] = not any or chosen[name]
+								end
+							end,
+						})
+					end
+				end
+			end
+			TabShop:Paragraph({
+				Title = "🚶 ไปร้านเอง",
+				Desc = "กดแล้ววาบไปหน้าร้าน แล้วกด E คุยกับ NPC เอง",
+			})
+			TabShop:Button({
+				Title = "⚙️ ไปร้าน Gears",
+				Icon = "wrench",
+				Callback = function() visitStall("Gears") end,
+			})
+			TabShop:Button({
+				Title = "🍎 ไปร้าน Food",
+				Icon = "apple",
+				Callback = function() visitStall("Food") end,
+			})
+
+			-- ═══ 🎮 การเคลื่อนที่ ═══
 			local flyToggleObj = TabMove:Toggle({
 				Title = "บิน (หรือกด F)",
 				Value = false,
@@ -776,7 +1204,7 @@ do
 					if v ~= flyState.on then flyToggle(true) end
 				end,
 			})
-			flyOnChanged = function(on)
+			flySync = function(on)
 				pcall(function() flyToggleObj:Set(on) end)
 			end
 			TabMove:Slider({
@@ -825,15 +1253,28 @@ do
 				Callback = function(v) setNoclip(v, true) end,
 			})
 
+			-- ═══ ⚙️ อื่น ๆ ═══
+			TabOther:Toggle({
+				Title = "♻️ Rebirth อัตโนมัติ",
+				Desc = "ยิง Rebirth ทุก 2 นาที — เซิร์ฟเช็กเงื่อนไขให้เอง",
+				Value = Settings.autoRebirth,
+				Callback = function(v) Settings.autoRebirth = v end,
+			})
+			TabOther:Toggle({
+				Title = "🔁 Auto Rejoin",
+				Desc = "โดนเตะ/หลุด → กลับเข้าเกมใหม่ + รันสคริปต์ต่อ",
+				Value = Settings.autoRejoin,
+				Callback = function(v) setAutoRejoin(v) end,
+			})
 			TabOther:Toggle({
 				Title = "Anti-AFK",
 				Desc = "กันเกมเตะออกเพราะแอฟ",
-				Value = false,
+				Value = true,
 				Callback = setAntiAfk,
 			})
 			TabOther:Paragraph({
 				Title = "🎮 ปุ่มลัด",
-				Desc = "RightShift = เปิด/ปิดเมนู\nF = บิน • N = ทะลุกำแพง",
+				Desc = "RightShift = เปิด/ปิดเมนู (มีปุ่มลอยบนจอ)\nF = บิน • N = ทะลุกำแพง",
 			})
 			TabOther:Button({
 				Title = "🗑 ปิดสคริปต์ทั้งหมด",
@@ -846,6 +1287,13 @@ do
 		end
 	else
 		warn("[RideHub] โหลด WindUI ไม่สำเร็จ: " .. tostring(WindUI))
+		pcall(function()
+			StarterGui:SetCore("SendNotification", {
+				Title = "RideHub",
+				Text = "UI โหลดไม่ได้ — แต่ระบบอัตโนมัติยังทำงานอยู่",
+				Duration = 5,
+			})
+		end)
 	end
 end
 
@@ -858,8 +1306,12 @@ bind(RunService.Heartbeat, function(dt)
 	if Window and statusPara then
 		local counts = {}
 		local list = scanEggs()
+		local topLuck, topLuckName = 0, "-"
 		for _, e in ipairs(list) do
 			counts[e.rarity] = (counts[e.rarity] or 0) + 1
+			if e.luck > topLuck then
+				topLuck, topLuckName = e.luck, e.name
+			end
 		end
 		local parts = {}
 		for _, r in ipairs(RARITY_LIST) do
@@ -867,11 +1319,12 @@ bind(RunService.Heartbeat, function(dt)
 				table.insert(parts, r:sub(1, 3) .. ":" .. counts[r])
 			end
 		end
-		local desc = ("ไข่ในแมป: %d (%s)\nตะกร้า: %d • รังว่าง: %s")
-			:format(#list, table.concat(parts, " "), basketCount(), hasFreeNest() and "มี" or "ไม่มี!")
-		desc = desc .. ("\nสถานะ: %s • เก็บแล้ว %d พลาด %d\nล่าสุด: %s"):format(
-			farming and "กำลังฟาร์ม..." or "พร้อม",
-			farmStats.collected, farmStats.failed, farmStats.last)
+		local desc = ("ไข่ในแมป: %d (%s)\nLuck สูงสุดในแมป: %s ★%s")
+			:format(#list, table.concat(parts, " "), topLuckName, fmtNum(topLuck))
+		desc = desc .. ("\nตะกร้า: %d • รังว่าง: %s • เก็บไข่อัตโนมัติ: %s")
+			:format(basketCount(), hasFreeNest() and "มี" or "ไม่มี!", Settings.autoFarm and "เปิด" or "ปิด")
+		desc = desc .. ("\nเก็บแล้ว %d พลาด %d • ล่าสุด: %s")
+			:format(farmStats.collected, farmStats.failed, farmStats.last)
 		pcall(function() statusPara:SetDesc(desc) end)
 	end
 end)
@@ -889,18 +1342,17 @@ end
 
 shutdown = function()
 	version += 1
-	farming = false
+	mainRunning = false
+	if rejoinConn then
+		rejoinConn:Disconnect()
+		rejoinConn = nil
+	end
 	flyStop(true)
 	setNoclip(false, true)
 	setEsp(false)
 	setAntiAfk(false)
 	Settings.walkLock = false
 	Settings.jumpLock = false
-	local hum = getHumanoid()
-	if hum then
-		hum.WalkSpeed = 16
-		hum.JumpPower = 50
-	end
 	for _, conn in ipairs(connections) do
 		conn:Disconnect()
 	end
@@ -910,23 +1362,40 @@ end
 
 getgenv().__RideHubHandle = { shutdown = shutdown }
 getgenv().RideHub = {
-	startFarm = startFarm,
-	stopFarm = stopFarm,
-	isFarming = function() return farming end,
 	teleportHome = function()
 		local cf = getHomeCF()
 		if cf then teleportTo(cf) end
 	end,
 	setEsp = setEsp,
-	autoHatch = autoHatch,
+	visitStall = visitStall,
+	hatchNow = hatchReadyEggs,
+	feedNow = feedPets,
+	isRunning = function() return controllerRunning end,
 	fly = {
 		toggle = flyToggle,
 		start = flyStart,
-		stop = function() flyStop() end,
+		stop = flyStop,
 		setSpeed = function(v) Settings.flySpeed = v end,
 	},
 	settings = Settings,
+	stats = farmStats,
 	shutdown = shutdown,
 }
 
-print("[RideHub] โหลดแล้ว — RightShift เปิดเมนู | F บิน | N noclip")
+--═══════════════ เริ่มระบบตอนโหลด ═══════════════
+setAntiAfk(true)
+if Settings.autoRejoin then
+	setAutoRejoin(true)
+end
+pcall(function()
+	queue_on_teleport('loadstring(game:HttpGet("https://raw.githubusercontent.com/ItsPvpMB/RideAPetHub/main/RideAPetHub.luau"))()')
+end)
+
+print("[RideHub v3] โหลดแล้ว — ระบบอัตโนมัติเริ่มใน 2 วิ | RightShift เมนู | F บิน | N noclip")
+notifyUI("ระบบอัตโนมัติเริ่มใน 2 วินาที — สวิตช์อยู่ในแต่ละแท็บ")
+
+task.delay(2, function()
+	if not controllerRunning then
+		task.spawn(mainController)
+	end
+end)
